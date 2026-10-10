@@ -12,6 +12,20 @@ const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1h" });
 };
 
+// Short-lived proof that a phone number passed OTP verification
+const createPhoneToken = (phoneNumber) => {
+  return jwt.sign({ phoneVerified: phoneNumber }, process.env.JWT_SECRET, { expiresIn: "15m" });
+};
+
+const checkPhoneToken = (token, phoneNumber) => {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return typeof decoded === "object" && decoded !== null && decoded.phoneVerified === phoneNumber;
+  } catch (error) {
+    return false;
+  }
+};
+
 // Fetch user profile
 const getUserProfile = async (req, res) => {
   try {
@@ -102,7 +116,7 @@ const loginUser = async (req, res) => {
 // User registration
 const registerUser = async (req, res) => {
   try {
-    const { name, email, password, phoneNumber } = req.body;
+    const { name, email, password, phoneNumber, verificationToken } = req.body;
 
     // Remove +91 prefix and trim spaces
     const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
@@ -120,6 +134,11 @@ const registerUser = async (req, res) => {
     const formattedPhoneNumber = phoneNumber.startsWith("+91")
       ? phoneNumber
       : `+91 ${strippedPhoneNumber}`;
+
+    // Require proof that this phone number passed OTP verification
+    if (!checkPhoneToken(verificationToken, `+91 ${strippedPhoneNumber}`)) {
+      return res.json({ success: false, message: "Phone number not verified" });
+    }
 
     // Check if user already exists with email or phone number
     const exists = await userModel.findOne({
@@ -213,6 +232,7 @@ const sendOtp = async (req, res) => {
       existingOtp.otp = hashedOtp;
       existingOtp.createdAt = Date.now();
       existingOtp.resendAllowedAt = resendAllowedAt;
+      existingOtp.attempts = 0;
       await existingOtp.save();
     } else {
       await otpModel.create({
@@ -243,22 +263,37 @@ const verifyOtp = async (req, res) => {
     const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
     const formattedPhoneNumber = `+91 ${strippedPhoneNumber}`;
 
-    const otpEntry = await otpModel
-      .findOne({ phoneNumber: formattedPhoneNumber })
-      .sort({ createdAt: -1 });
+    // Count this attempt atomically on the newest OTP for the phone number
+    const otpEntry = await otpModel.findOneAndUpdate(
+      { phoneNumber: formattedPhoneNumber },
+      { $inc: { attempts: 1 } },
+      { new: true, sort: { createdAt: -1 } }
+    );
 
     if (!otpEntry) {
       return res.json({ success: false, message: "Invalid or expired OTP" });
     }
 
-    const isMatch = await bcrypt.compare(otp, otpEntry.otp);
+    if (otpEntry.attempts > 5) {
+      await otpModel.deleteOne({ _id: otpEntry._id });
+      return res.json({
+        success: false,
+        message: "Too many incorrect attempts. Please request a new OTP.",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(String(otp), otpEntry.otp);
     if (!isMatch) {
       return res.json({ success: false, message: "Incorrect OTP" });
     }
 
     await otpModel.deleteOne({ _id: otpEntry._id });
 
-    res.json({ success: true, message: "OTP verified successfully" });
+    res.json({
+      success: true,
+      message: "OTP verified successfully",
+      verificationToken: createPhoneToken(formattedPhoneNumber),
+    });
   } catch (error) {
     console.error(error);
     res
@@ -269,11 +304,16 @@ const verifyOtp = async (req, res) => {
 
 // Reset Password
 const resetPassword = async (req, res) => {
-  const { phoneNumber, newPassword } = req.body;
+  const { phoneNumber, newPassword, verificationToken } = req.body;
 
   try {
     const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
     const formattedPhoneNumber = `+91 ${strippedPhoneNumber}`;
+
+    // Require proof that this phone number passed OTP verification
+    if (!checkPhoneToken(verificationToken, formattedPhoneNumber)) {
+      return res.json({ success: false, message: "Phone number not verified" });
+    }
 
     const user = await userModel.findOne({ phoneNumber: formattedPhoneNumber });
 

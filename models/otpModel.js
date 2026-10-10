@@ -5,6 +5,7 @@ const otpSchema = new mongoose.Schema({
   otp: { type: String, required: true },
   createdAt: { type: Date, default: Date.now, expires: 300 }, // OTP expires in 5 minutes
   resendAllowedAt: { type: Date, default: Date.now }, // Controls when the next OTP can be sent
+  attempts: { type: Number, default: 0 }, // Failed verification attempts for this OTP
 });
 
 const Otp = mongoose.model("Otp", otpSchema);
