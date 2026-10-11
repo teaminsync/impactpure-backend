@@ -1,6 +1,7 @@
 import validator from "validator";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import { createHash, timingSafeEqual } from "node:crypto";
 import userModel from "../models/userModel.js";
 import otpModel from "../models/otpModel.js";
 import twilio from "twilio";
@@ -53,23 +54,44 @@ const getUserProfile = async (req, res) => {
   }
 };
 
+// Constant-time string comparison (both sides are hashed first so lengths match)
+const safeEqual = (a, b) =>
+  timingSafeEqual(
+    createHash("sha256").update(String(a)).digest(),
+    createHash("sha256").update(String(b)).digest()
+  );
+
 // Admin login
 const adminLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
 
+    // Fail closed if the admin credentials are not configured or the input is not text
     if (
-      email === process.env.ADMIN_EMAIL &&
-      password === process.env.ADMIN_PASSWORD
+      !adminEmail ||
+      !adminPassword ||
+      typeof email !== "string" ||
+      typeof password !== "string"
     ) {
-      const token = jwt.sign(email + password, process.env.JWT_SECRET);
-      res.json({ success: true, token });
-    } else {
-      res.json({ success: false, message: "Invalid credentials" });
+      return res.json({ success: false, message: "Invalid credentials" });
     }
+
+    const emailOk = safeEqual(email, adminEmail);
+    const passwordOk = safeEqual(password, adminPassword);
+
+    if (emailOk && passwordOk) {
+      const token = jwt.sign({ role: "admin" }, process.env.JWT_SECRET, {
+        expiresIn: "8h",
+      });
+      return res.json({ success: true, token });
+    }
+
+    return res.json({ success: false, message: "Invalid credentials" });
   } catch (error) {
-    console.error(error);
-    res.json({ success: false, message: error.message });
+    console.error("Admin login error:", error.message);
+    res.json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 

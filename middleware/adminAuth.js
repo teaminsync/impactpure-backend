@@ -9,8 +9,14 @@ const adminAuth = async (req, res, next) => {
         message: "Not Authorized Login Again",
       });
     }
-    const token_decode = jwt.verify(token, process.env.JWT_SECRET);
-    if (token_decode !== process.env.ADMIN_EMAIL + process.env.ADMIN_PASSWORD) {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    });
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      decoded.role !== "admin"
+    ) {
       return res.json({
         success: false,
         message: "Not Authorized Login Again",
@@ -18,8 +24,9 @@ const adminAuth = async (req, res, next) => {
     }
     next();
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    // Do not leak verification details (expired, invalid signature) to the caller
+    console.error("Admin auth failed:", error.name);
+    res.json({ success: false, message: "Not Authorized Login Again" });
   }
 };
 
