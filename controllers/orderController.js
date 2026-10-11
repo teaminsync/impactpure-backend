@@ -2,6 +2,12 @@ import orderModel from "../models/orderModel.js";
 import userModel from "../models/userModel.js";
 import razorpay from "razorpay";
 import { createShiprocketOrder } from "./shiprocketController.js";
+import productModel from "../models/productModel.js";
+import {
+  normalizeItems,
+  priceItems,
+  sanitizeAddress,
+} from "../utils/orderPricing.js";
 
 // global variables
 const currency = "inr";
@@ -15,7 +21,43 @@ const razorpayInstance = new razorpay({
 const placeOrder = async (req, res) => {
   try {
     const userId = req.userId; // Extract from middleware
-    const { items, amount, address } = req.body;
+    const {
+      items: rawItems,
+      amount: clientAmount,
+      address: rawAddress,
+    } = req.body;
+
+    // Prices and totals are computed here from the database. The browser only says
+    // which products and how many; its amount is used only to detect a stale price.
+    const normalized = normalizeItems(rawItems);
+    if (!normalized.ok) {
+      return res.status(400).json({ success: false, message: normalized.message });
+    }
+
+    const cleanAddress = sanitizeAddress(rawAddress);
+    if (!cleanAddress.ok) {
+      return res.status(400).json({ success: false, message: cleanAddress.message });
+    }
+
+    const dbProducts = await productModel
+      .find({ _id: { $in: normalized.items.map((line) => line._id) } })
+      .select("name price");
+
+    const pricing = priceItems(normalized.items, dbProducts);
+    if (!pricing.ok) {
+      return res.status(400).json({ success: false, message: pricing.message });
+    }
+
+    if (Math.round(Number(clientAmount) * 100) !== pricing.totalPaise) {
+      return res.status(400).json({
+        success: false,
+        message: "The order total has changed. Please refresh the page and try again.",
+      });
+    }
+
+    const items = normalized.items;
+    const amount = pricing.totalRupees;
+    const address = cleanAddress.address;
 
     if (!userId) {
       return res

@@ -5,6 +5,7 @@ import ShipRocketToken from "../models/shiprocketTokenModel.js"; // Import the t
 import orderModel from "../models/orderModel.js"; // Assuming you have the Order model to access the order details
 import { sendInvoiceEmail } from "../utils/emailService.js";
 import ShiprocketOrder from "../models/shiprocketOrderModel.js";
+import { deriveShiprocketAmounts } from "../utils/orderPricing.js";
 
 dotenv.config();
 
@@ -305,12 +306,12 @@ const createShiprocketOrder = async (orderId) => {
     }
     const token = tokenRecord.token;
 
-    let totalSellingPrice = 0;
-    order.items.forEach((item) => {
-      totalSellingPrice += item.quantity * 3969; // 3969 is the selling price of each item
-    });
-
-    const shippingCharges = order.amount - totalSellingPrice;
+    // Amounts come from the server-computed order total, not from a hardcoded price
+    const totalUnits = order.items.reduce((sum, item) => sum + item.quantity, 0);
+    const { shippingCharges, subTotal, unitPrice } = deriveShiprocketAmounts(
+      order.amount,
+      totalUnits
+    );
 
     // Step 3: Prepare Shiprocket Order Data
     const orderData = {
@@ -332,11 +333,11 @@ const createShiprocketOrder = async (orderId) => {
         name: "IMPACTPURE Portable Water Purifier", // Default placeholder for product name
         sku: "SKU-001", // Default placeholder for SKU
         units: item.quantity, // Directly using the quantity from the order
-        selling_price: 3969, // Calculate price based on quantity
+        selling_price: unitPrice,
       })),
       payment_method: determinePaymentMethod(order),
       shipping_charges: shippingCharges,
-      sub_total: order.amount - shippingCharges,
+      sub_total: subTotal,
       length: adjustDimensions(order.items[0].quantity).length,
       breadth: adjustDimensions(order.items[0].quantity).breadth,
       height: adjustDimensions(order.items[0].quantity).height,
