@@ -20,68 +20,6 @@ const SHIPROCKET_ORDER_HEIGHT = process.env.SHIPROCKET_ORDER_HEIGHT;
 const SHIPROCKET_ORDER_WEIGHT = process.env.SHIPROCKET_ORDER_WEIGHT;
 const BACKEND_API_BASE_URL = process.env.BACKEND_API_BASE_URL;
 
-// Authenticate ShipRocket API and store token in MongoDB
-const authenticateShipRocket = async (req, res) => {
-  try {
-    // Check if the token already exists in the database
-    let tokenRecord = await ShipRocketToken.findOne();
-
-    if (tokenRecord) {
-      return res.json({
-        success: true,
-        message: "Token already available",
-        token: tokenRecord.token,
-      });
-    }
-
-    // Prepare data for authentication
-    const data = {
-      email: SHIPROCKET_EMAIL,
-      password: SHIPROCKET_PASSWORD,
-    };
-
-    // Send POST request to ShipRocket API for authentication
-    const response = await axios.post(
-      `${SHIPROCKET_BASE_URL}/auth/login`,
-      data,
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    // Check if the response contains the expected token
-    if (!response.data.token) {
-      return res.status(400).json({
-        success: false,
-        message: "Authentication failed. Token not found in the response.",
-      });
-    }
-
-    // Extract the token from the response
-    const token = response.data.token;
-
-    // Store the token in the database for future use
-    tokenRecord = new ShipRocketToken({ token });
-    await tokenRecord.save();
-
-    res.json({
-      success: true,
-      message: "Authentication successful",
-      token: token,
-    });
-  } catch (error) {
-    console.error("Error authenticating with ShipRocket:", error);
-    res.status(500).json({
-      success: false,
-      message:
-        "Authentication failed. Please check your credentials and try again.",
-      error: error.response ? error.response.data : error.message, // Detailed error response from ShipRocket API
-    });
-  }
-};
-
 const checkServiceability = async (req, res) => {
   try {
     // Retrieve parameters from the query string or use default values if not provided
@@ -452,7 +390,6 @@ const createShiprocketOrder = async (orderId) => {
 };
 
 export {
-  authenticateShipRocket,
   checkServiceability,
   generateInvoice,
   createShiprocketOrder,

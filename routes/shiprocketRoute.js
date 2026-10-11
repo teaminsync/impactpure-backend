@@ -1,20 +1,12 @@
 // server/routes/shiprocketRoute.js
 import express from "express";
-import {
-  authenticateShipRocket,
-  checkServiceability,
-  generateInvoice,
-  createShiprocketOrder,
-} from "../controllers/shiprocketController.js";
+import { generateInvoice } from "../controllers/shiprocketController.js";
 
 const shiprocketRouter = express.Router();
 
-shiprocketRouter.post("/authenticate", authenticateShipRocket);
-
-shiprocketRouter.get("/serviceability", checkServiceability);
-
+// Only invoice generation stays routed (it is called internally after an order is created).
+// The authenticate, serviceability and create-order routes were removed: nothing in the
+// storefront or admin app uses them, and /authenticate returned a Shiprocket token to any caller.
 shiprocketRouter.post("/generate-invoice", generateInvoice);
-
-shiprocketRouter.post("/create-order", createShiprocketOrder);
 
 export default shiprocketRouter;
