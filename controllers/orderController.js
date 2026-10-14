@@ -8,6 +8,12 @@ import {
   priceItems,
   sanitizeAddress,
 } from "../utils/orderPricing.js";
+import mongoose from "mongoose";
+import paymentIntentModel from "../models/paymentIntentModel.js";
+import {
+  createRazorpayIntent,
+  confirmRazorpayPayment,
+} from "../utils/razorpayOrders.js";
 
 // global variables
 const currency = "inr";
@@ -17,6 +23,20 @@ const razorpayInstance = new razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
+
+// Everything the Razorpay checkout logic needs, injected so it can be tested
+const razorpayDeps = {
+  razorpay: razorpayInstance,
+  Product: productModel,
+  Order: orderModel,
+  Intent: paymentIntentModel,
+  keySecret: process.env.RAZORPAY_KEY_SECRET,
+  newId: () => new mongoose.Types.ObjectId().toString(),
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pollAttempts: 4,
+  pollDelayMs: 1500,
+};
 
 const placeOrder = async (req, res) => {
   try {
@@ -114,19 +134,11 @@ const placeOrder = async (req, res) => {
 const placeOrderRazorpay = async (req, res) => {
   try {
     const userId = req.userId; // Extract from middleware
-    const { items, amount, address } = req.body;
 
     if (!userId) {
       return res
         .status(400)
         .json({ success: false, message: "User ID is required" });
-    }
-
-    if (!items || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot place order with an empty cart.",
-      });
     }
 
     const userData = await userModel.findById(userId);
@@ -136,38 +148,39 @@ const placeOrderRazorpay = async (req, res) => {
         .json({ success: false, message: "User not found" });
     }
 
-    // ✅ Convert items into references (store product IDs only)
-    const formattedItems = items.map((item) => ({
-      product: item._id, // ✅ Store only product ID
-      quantity: item.quantity,
-    }));
+    const { items, amount, address } = req.body;
+    const result = await createRazorpayIntent(razorpayDeps, {
+      userId,
+      rawItems: items,
+      rawAddress: address,
+      clientAmount: amount,
+    });
+    if (!result.ok) {
+      return res
+        .status(result.status || 400)
+        .json({ success: false, message: result.message });
+    }
 
-    const options = {
-      amount: amount * 100, // Convert to paise
-      currency: "INR",
-      receipt: `order_${Date.now()}`, // Use a unique identifier
-    };
-
-    const order = await razorpayInstance.orders.create(options);
-
-    res.json({ success: true, order, formattedItems, address, amount }); // ✅ Send formatted data for verification
+    // Same response shape as before so the storefront does not need to change
+    res.json({
+      success: true,
+      order: result.razorpayOrder,
+      formattedItems: result.lines,
+      address: result.address,
+      amount: result.amountRupees,
+    });
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Razorpay order creation failed:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Could not start the payment. Please try again.",
+    });
   }
 };
 
 const verifyRazorpay = async (req, res) => {
   try {
     const userId = req.userId; // Extract from middleware
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      items,
-      amount,
-      address,
-    } = req.body;
 
     if (!userId) {
       return res
@@ -175,49 +188,38 @@ const verifyRazorpay = async (req, res) => {
         .json({ success: false, message: "User ID is required" });
     }
 
-    // Fetch order details from Razorpay
-    const orderInfo = await razorpayInstance.orders.fetch(razorpay_order_id);
-
-    if (orderInfo.status === "paid") {
-      // ✅ Convert items to store product references
-      const formattedItems = items.map((item) => ({
-        product: item._id, // ✅ Store only the product ID
-        quantity: item.quantity,
-      }));
-
-      // ✅ Create the order in the database
-      const orderData = {
-        userId,
-        items: formattedItems,
-        address,
-        amount,
-        paymentMethod: "Razorpay",
-        payment: true,
-        date: Date.now(),
-        transactionId: razorpay_payment_id,
-      };
-
-      const newOrder = new orderModel(orderData);
-      await newOrder.save();
-
-      // ✅ Clear user's cart after successful order
-      await userModel.findByIdAndUpdate(userId, { cartData: {} });
-
-      // Call Shiprocket order creation
-      await createShiprocketOrder(newOrder._id); // Don't send response here, just create the order
-
-      // Send the response once all operations are complete
-      return res.json({
-        success: true,
-        message: "Payment Successful, Order Placed",
-        order: newOrder,
-      });
-    } else {
-      return res.json({ success: false, message: "Payment Failed" });
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
+    const result = await confirmRazorpayPayment(razorpayDeps, {
+      userId,
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+    });
+    if (!result.ok) {
+      return res
+        .status(result.status || 400)
+        .json({ success: false, message: result.message });
     }
+
+    // Only the first confirmation clears the cart and creates the shipment
+    if (result.created) {
+      await userModel.findByIdAndUpdate(userId, { cartData: {} });
+      await createShiprocketOrder(result.order._id);
+    }
+
+    return res.json({
+      success: true,
+      message: "Payment Successful, Order Placed",
+      order: result.order,
+    });
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Razorpay verification failed:", error.message);
+    res.status(500).json({
+      success: false,
+      message:
+        "Could not confirm the payment. If money was deducted it will be reconciled; please contact support.",
+    });
   }
 };
 
@@ -299,4 +301,5 @@ export {
   allOrders,
   userOrders,
   updateStatus,
+  razorpayDeps,
 };

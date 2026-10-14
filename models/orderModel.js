@@ -10,6 +10,8 @@ const orderSchema = new mongoose.Schema({
         required: true,
       }, // ✅ Reference to Product model
       quantity: { type: Number, required: true },
+      name: { type: String },
+      price: { type: Number },
     },
   ],
   amount: { type: Number, required: true },
@@ -18,6 +20,10 @@ const orderSchema = new mongoose.Schema({
   paymentMethod: { type: String, required: true },
   payment: { type: Boolean, required: true, default: false },
   date: { type: Number, required: true },
+  razorpayOrderId: { type: String, unique: true, sparse: true },
+  razorpayPaymentId: { type: String, unique: true, sparse: true },
+  paidAmountPaise: { type: Number },
+  discountPaise: { type: Number },
 });
 
 const orderModel =
