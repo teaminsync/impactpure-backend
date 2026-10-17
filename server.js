@@ -9,6 +9,7 @@ import cartRouter from "./routes/cartRoute.js";
 import orderRouter from "./routes/orderRoute.js";
 import { newsletterRouter } from "./routes/newsletterRoutes.js";
 import shiprocketRouter from "./routes/shiprocketRoute.js"; // Ensure this import is correct
+import { captureRawBody } from "./utils/rawBody.js";
 
 // App Config
 const app = express();
@@ -16,7 +17,7 @@ const port = process.env.PORT || 4000;
 connectDB();
 connectCloudinary();
 
-app.use(express.json());
+app.use(express.json({ verify: captureRawBody }));
 app.use(cors());
 
 // API Endpoints

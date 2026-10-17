@@ -6,6 +6,7 @@ import {
   userOrders,
   updateStatus,
   verifyRazorpay,
+  razorpayWebhook,
 } from "../controllers/orderController.js";
 import adminAuth from "../middleware/adminAuth.js";
 import authUser from "../middleware/auth.js";
@@ -19,5 +20,7 @@ orderRouter.post("/place", authUser, placeOrder);
 orderRouter.post("/razorpay", authUser, placeOrderRazorpay);
 orderRouter.post("/userorders", authUser, userOrders);
 orderRouter.post("/verifyRazorpay", authUser, verifyRazorpay);
+// Razorpay calls this itself (signed, server to server), so it has no login
+orderRouter.post("/razorpay-webhook", razorpayWebhook);
 
 export default orderRouter;

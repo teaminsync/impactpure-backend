@@ -7,8 +7,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const INTENT_KEEP_DAYS_UNPAID = 30;
 export const INTENT_KEEP_DAYS_PAID = 90;
 
-const ORDER_ID = /^order_[A-Za-z0-9]{6,40}$/;
-const PAYMENT_ID = /^pay_[A-Za-z0-9]{6,40}$/;
+export const ORDER_ID_PATTERN = /^order_[A-Za-z0-9]{6,40}$/;
+export const PAYMENT_ID_PATTERN = /^pay_[A-Za-z0-9]{6,40}$/;
 
 // Step 1 of a Razorpay purchase: the server prices the cart, creates the Razorpay order
 // with the server total, and remembers what was priced (the "intent").
@@ -109,29 +109,9 @@ export const evaluatePayment = (intent, payment) => {
   };
 };
 
-// Step 2: after the browser reports a payment, check the signature, ask Razorpay for the
-// payment, and create the order exactly once.
-export const confirmRazorpayPayment = async (
-  deps,
-  { userId, orderId, paymentId, signature }
-) => {
-  if (
-    typeof orderId !== "string" ||
-    !ORDER_ID.test(orderId) ||
-    typeof paymentId !== "string" ||
-    !PAYMENT_ID.test(paymentId) ||
-    typeof signature !== "string"
-  ) {
-    return { ok: false, status: 400, message: "Invalid payment details." };
-  }
-  if (!verifyPaymentSignature(orderId, paymentId, signature, deps.keySecret)) {
-    return { ok: false, status: 400, message: "Payment verification failed." };
-  }
-
-  const intent = await deps.Intent.findOne({ razorpayOrderId: orderId, userId });
-  if (!intent) {
-    return { ok: false, status: 404, message: "Order not found." };
-  }
+// Shared by the browser confirmation and the webhook: given the intent for a Razorpay
+// order, ask Razorpay for the payment and create the order exactly once.
+export const settleRazorpayPayment = async (deps, { intent, orderId, paymentId }) => {
   const existing = await deps.Order.findOne({ razorpayOrderId: orderId });
   if (existing) {
     return { ok: true, created: false, order: existing };
@@ -215,4 +195,30 @@ export const confirmRazorpayPayment = async (
   }
 
   return { ok: true, created: true, order };
+};
+
+// Step 2 (browser): after the browser reports a payment, check the signature, find the
+// intent for this user, then settle it.
+export const confirmRazorpayPayment = async (
+  deps,
+  { userId, orderId, paymentId, signature }
+) => {
+  if (
+    typeof orderId !== "string" ||
+    !ORDER_ID_PATTERN.test(orderId) ||
+    typeof paymentId !== "string" ||
+    !PAYMENT_ID_PATTERN.test(paymentId) ||
+    typeof signature !== "string"
+  ) {
+    return { ok: false, status: 400, message: "Invalid payment details." };
+  }
+  if (!verifyPaymentSignature(orderId, paymentId, signature, deps.keySecret)) {
+    return { ok: false, status: 400, message: "Payment verification failed." };
+  }
+
+  const intent = await deps.Intent.findOne({ razorpayOrderId: orderId, userId });
+  if (!intent) {
+    return { ok: false, status: 404, message: "Order not found." };
+  }
+  return settleRazorpayPayment(deps, { intent, orderId, paymentId });
 };

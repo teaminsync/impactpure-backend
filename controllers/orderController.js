@@ -14,6 +14,7 @@ import {
   createRazorpayIntent,
   confirmRazorpayPayment,
 } from "../utils/razorpayOrders.js";
+import { handleRazorpayWebhook } from "../utils/razorpayWebhook.js";
 
 // global variables
 const currency = "inr";
@@ -31,6 +32,7 @@ const razorpayDeps = {
   Order: orderModel,
   Intent: paymentIntentModel,
   keySecret: process.env.RAZORPAY_KEY_SECRET,
+  webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
   newId: () => new mongoose.Types.ObjectId().toString(),
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -223,6 +225,36 @@ const verifyRazorpay = async (req, res) => {
   }
 };
 
+// Razorpay webhook: a signed server to server notification that completes a payment even
+// if the customer's browser never came back. No login; the signature is the protection.
+const razorpayWebhook = async (req, res) => {
+  try {
+    const result = await handleRazorpayWebhook(razorpayDeps, {
+      rawBody: req.rawBody,
+      signature: req.headers["x-razorpay-signature"],
+    });
+
+    // Only the delivery that created the order clears the cart and creates the shipment
+    if (result.created) {
+      try {
+        await userModel.findByIdAndUpdate(result.order.userId, { cartData: {} });
+      } catch (error) {
+        console.error("Webhook cart clear failed:", error.message);
+      }
+      await createShiprocketOrder(result.order._id);
+    }
+
+    return res
+      .status(result.status)
+      .json({ success: result.status < 300, message: result.message });
+  } catch (error) {
+    console.error("Razorpay webhook failed:", error.message);
+    return res
+      .status(500)
+      .json({ success: false, message: "Webhook processing failed." });
+  }
+};
+
 const allOrders = async (req, res) => {
   try {
     // ✅ Fetch all orders and populate product details
@@ -302,4 +334,5 @@ export {
   userOrders,
   updateStatus,
   razorpayDeps,
+  razorpayWebhook,
 };
