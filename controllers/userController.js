@@ -6,8 +6,20 @@ import userModel from "../models/userModel.js";
 import otpModel from "../models/otpModel.js";
 import twilio from "twilio";
 import { sendWelcomeEmail } from "../utils/emailService.js";
+import {
+  generateOtp,
+  normalizeIndianMobile,
+  toE164,
+  toStoredPhone,
+} from "../utils/otpHelpers.js";
+import { checkPassword } from "../utils/passwordPolicy.js";
+import { smsDailyCheck } from "../middleware/limiters.js";
+import { TOO_MANY, UNAVAILABLE } from "../middleware/rateLimit.js";
 
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN);
+
+// Everything with side effects outside the database, injected so the logic can be tested
+const userDeps = { sms: client, smsDailyCheck, sendWelcomeEmail };
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1h" });
@@ -20,7 +32,9 @@ const createPhoneToken = (phoneNumber) => {
 
 const checkPhoneToken = (token, phoneNumber) => {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    });
     return typeof decoded === "object" && decoded !== null && decoded.phoneVerified === phoneNumber;
   } catch (error) {
     return false;
@@ -96,92 +110,91 @@ const adminLogin = async (req, res) => {
 };
 
 // User login
+// An unknown account and a wrong password get the same answer, and a password check always
+// runs, so neither the message nor the timing shows which accounts exist.
+const INVALID_LOGIN = "Invalid credentials";
+let dummyHash;
+const getDummyHash = () => {
+  if (!dummyHash) dummyHash = bcrypt.hash("impactpure-timing-pad", 10);
+  return dummyHash;
+};
+
 const loginUser = async (req, res) => {
   try {
-    const { identifier, password } = req.body;
+    const { identifier, password } = req.body || {};
 
-    const isEmail = validator.isEmail(identifier);
-    const strippedPhoneNumber =
-      !isEmail && identifier.startsWith("+91")
-        ? identifier.replace("+91", "").trim()
-        : identifier;
-
-    const formattedPhoneNumber =
-      !isEmail && identifier.startsWith("+91")
-        ? identifier
-        : `+91 ${strippedPhoneNumber}`;
-
-    const user = await userModel.findOne({
-      $or: [
-        { email: isEmail ? identifier : null },
-        { phoneNumber: isEmail ? null : formattedPhoneNumber },
-      ],
-    });
-
-    if (!user) {
-      return res.json({ success: false, message: "User doesn't exist" });
+    if (
+      typeof identifier !== "string" ||
+      typeof password !== "string" ||
+      !identifier.trim() ||
+      !password
+    ) {
+      return res.json({ success: false, message: INVALID_LOGIN });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (isMatch) {
-      const token = createToken(user._id);
-      res.json({ success: true, token });
+    const id = identifier.trim();
+    let query = null;
+    if (validator.isEmail(id)) {
+      query = { email: id.toLowerCase() };
     } else {
-      res.json({ success: false, message: "Invalid credentials" });
+      const phone = normalizeIndianMobile(id);
+      if (phone) query = { phoneNumber: toStoredPhone(phone) };
     }
+
+    const user = query ? await userModel.findOne(query) : null;
+    const isMatch = await bcrypt.compare(
+      password,
+      user ? user.password : await getDummyHash()
+    );
+
+    if (!user || !isMatch) {
+      return res.json({ success: false, message: INVALID_LOGIN });
+    }
+
+    return res.json({ success: true, token: createToken(user._id) });
   } catch (error) {
-    console.error(error);
-    res.json({ success: false, message: error.message });
+    console.error("Login error:", error.message);
+    res.json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 
 // User registration
 const registerUser = async (req, res) => {
   try {
-    const { name, email, password, phoneNumber, verificationToken } = req.body;
+    const { name, email, password, phoneNumber, verificationToken } = req.body || {};
 
-    // Remove +91 prefix and trim spaces
-    const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
-    const phoneRegex = /^[0-9]{10}$/;
-
-    // Validate phone number
-    if (!phoneRegex.test(strippedPhoneNumber)) {
-      return res.json({
-        success: false,
-        message: "Invalid phone number format",
-      });
+    const phone = normalizeIndianMobile(phoneNumber);
+    if (!phone) {
+      return res.json({ success: false, message: "Invalid phone number format" });
     }
-
-    // Format phone number with +91 prefix
-    const formattedPhoneNumber = phoneNumber.startsWith("+91")
-      ? phoneNumber
-      : `+91 ${strippedPhoneNumber}`;
+    const formattedPhoneNumber = toStoredPhone(phone);
 
     // Require proof that this phone number passed OTP verification
-    if (!checkPhoneToken(verificationToken, `+91 ${strippedPhoneNumber}`)) {
+    if (!checkPhoneToken(verificationToken, formattedPhoneNumber)) {
       return res.json({ success: false, message: "Phone number not verified" });
+    }
+
+    if (typeof name !== "string" || !name.trim() || name.trim().length > 100) {
+      return res.json({ success: false, message: "Please enter your name" });
+    }
+
+    if (typeof email !== "string" || !validator.isEmail(email.trim())) {
+      return res.json({ success: false, message: "Invalid email format" });
+    }
+    const cleanEmail = email.trim().toLowerCase();
+
+    const passwordCheck = checkPassword(password);
+    if (!passwordCheck.ok) {
+      return res.json({ success: false, message: passwordCheck.message });
     }
 
     // Check if user already exists with email or phone number
     const exists = await userModel.findOne({
-      $or: [{ email }, { phoneNumber: formattedPhoneNumber }],
+      $or: [{ email: cleanEmail }, { phoneNumber: formattedPhoneNumber }],
     });
 
     if (exists) {
       return res.json({ success: false, message: "User already exists" });
-    }
-
-    // Validate email format
-    if (!validator.isEmail(email)) {
-      return res.json({ success: false, message: "Invalid email format" });
-    }
-
-    // Check password length
-    if (password.length < 8) {
-      return res.json({
-        success: false,
-        message: "Password must be at least 8 characters long",
-      });
     }
 
     // Hash the password securely
@@ -189,8 +202,8 @@ const registerUser = async (req, res) => {
 
     // Create new user
     const newUser = new userModel({
-      name,
-      email,
+      name: name.trim(),
+      email: cleanEmail,
       password: hashedPassword,
       phoneNumber: formattedPhoneNumber,
     });
@@ -198,7 +211,8 @@ const registerUser = async (req, res) => {
     const user = await newUser.save();
 
     // Send welcome email asynchronously
-    sendWelcomeEmail(user.email, user.name)
+    userDeps
+      .sendWelcomeEmail(user.email, user.name)
       .then(() => console.log("Welcome email sent successfully"))
       .catch((error) => console.error("Error sending welcome email:", error));
 
@@ -218,37 +232,43 @@ const registerUser = async (req, res) => {
 
 // Send OTP
 const sendOtp = async (req, res) => {
-  const { phoneNumber } = req.body;
-
   try {
-    const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
-    const formattedPhoneNumber = `+91 ${strippedPhoneNumber}`;
-
-    if (!/^[0-9]{10}$/.test(strippedPhoneNumber)) {
+    const phone = normalizeIndianMobile((req.body || {}).phoneNumber);
+    if (!phone) {
       return res.json({ success: false, message: "Invalid phone number" });
     }
+    const formattedPhoneNumber = toStoredPhone(phone);
 
+    // The resend cooldown lives on the OTP record. Wrong guesses never delete that record,
+    // so they cannot be used to skip the wait.
     const existingOtp = await otpModel.findOne({
       phoneNumber: formattedPhoneNumber,
     });
 
-    if (existingOtp) {
-      const currentTime = new Date();
-      if (currentTime < existingOtp.resendAllowedAt) {
-        const waitTime = Math.ceil(
-          (existingOtp.resendAllowedAt - currentTime) / 1000
-        );
-        return res.json({
-          success: false,
-          message: `Please wait ${waitTime} seconds before requesting a new OTP.`,
-        });
-      }
+    if (existingOtp && new Date() < existingOtp.resendAllowedAt) {
+      const waitTime = Math.ceil(
+        (existingOtp.resendAllowedAt - new Date()) / 1000
+      );
+      return res.json({
+        success: false,
+        message: `Please wait ${waitTime} seconds before requesting a new OTP.`,
+      });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Daily cap on real SMS sends across the whole site
+    const cap = await userDeps.smsDailyCheck();
+    if (!cap.ok) {
+      if (cap.unavailable) {
+        return res.status(503).json({ success: false, message: UNAVAILABLE });
+      }
+      res.setHeader("Retry-After", String(cap.retryAfterSec));
+      return res.status(429).json({ success: false, message: TOO_MANY });
+    }
+
+    const otp = generateOtp();
     const hashedOtp = await bcrypt.hash(otp, 10);
 
-    const resendAllowedAt = new Date(Date.now() + 30 * 1000); // 30 seconds later
+    const resendAllowedAt = new Date(Date.now() + 60 * 1000); // 60 seconds later
 
     if (existingOtp) {
       existingOtp.otp = hashedOtp;
@@ -264,26 +284,39 @@ const sendOtp = async (req, res) => {
       });
     }
 
-    await client.messages.create({
-      body: `Hello! Your OTP for verifying your IMPACTPURE account is ${otp}. It is valid for 5 minutes. Please use it to complete your registration.`,
-      from: process.env.TWILIO_PHONE,
-      to: formattedPhoneNumber,
-    });
+    try {
+      await userDeps.sms.messages.create({
+        body: `Your IMPACTPURE verification code is ${otp}. It is valid for 5 minutes. Do not share it with anyone.`,
+        from: process.env.TWILIO_PHONE,
+        to: toE164(phone),
+      });
+    } catch (error) {
+      // Only Twilio's error code and HTTP status are logged: its message can contain the phone number
+      console.error(
+        "Twilio send failed. code:",
+        error && error.code,
+        "status:",
+        error && error.status
+      );
+      return res.status(500).json({ success: false, message: "Failed to send OTP" });
+    }
 
     res.json({ success: true, message: "OTP sent successfully" });
   } catch (error) {
-    console.error(error);
+    console.error("Send OTP error:", error.message);
     res.status(500).json({ success: false, message: "Failed to send OTP" });
   }
 };
 
 // Verify OTP
 const verifyOtp = async (req, res) => {
-  const { phoneNumber, otp } = req.body;
-
   try {
-    const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
-    const formattedPhoneNumber = `+91 ${strippedPhoneNumber}`;
+    const { phoneNumber, otp } = req.body || {};
+    const phone = normalizeIndianMobile(phoneNumber);
+    if (!phone || (typeof otp !== "string" && typeof otp !== "number")) {
+      return res.json({ success: false, message: "Invalid or expired OTP" });
+    }
+    const formattedPhoneNumber = toStoredPhone(phone);
 
     // Count this attempt atomically on the newest OTP for the phone number
     const otpEntry = await otpModel.findOneAndUpdate(
@@ -296,8 +329,8 @@ const verifyOtp = async (req, res) => {
       return res.json({ success: false, message: "Invalid or expired OTP" });
     }
 
+    // The record is kept (not deleted) so the resend cooldown on it still applies
     if (otpEntry.attempts > 5) {
-      await otpModel.deleteOne({ _id: otpEntry._id });
       return res.json({
         success: false,
         message: "Too many incorrect attempts. Please request a new OTP.",
@@ -317,7 +350,7 @@ const verifyOtp = async (req, res) => {
       verificationToken: createPhoneToken(formattedPhoneNumber),
     });
   } catch (error) {
-    console.error(error);
+    console.error("Verify OTP error:", error.message);
     res
       .status(500)
       .json({ success: false, message: "OTP verification failed" });
@@ -326,15 +359,23 @@ const verifyOtp = async (req, res) => {
 
 // Reset Password
 const resetPassword = async (req, res) => {
-  const { phoneNumber, newPassword, verificationToken } = req.body;
-
   try {
-    const strippedPhoneNumber = phoneNumber.replace("+91", "").trim();
-    const formattedPhoneNumber = `+91 ${strippedPhoneNumber}`;
+    const { phoneNumber, newPassword, verificationToken } = req.body || {};
+
+    const phone = normalizeIndianMobile(phoneNumber);
+    if (!phone) {
+      return res.json({ success: false, message: "Invalid phone number" });
+    }
+    const formattedPhoneNumber = toStoredPhone(phone);
 
     // Require proof that this phone number passed OTP verification
     if (!checkPhoneToken(verificationToken, formattedPhoneNumber)) {
       return res.json({ success: false, message: "Phone number not verified" });
+    }
+
+    const passwordCheck = checkPassword(newPassword);
+    if (!passwordCheck.ok) {
+      return res.json({ success: false, message: passwordCheck.message });
     }
 
     const user = await userModel.findOne({ phoneNumber: formattedPhoneNumber });
@@ -343,20 +384,13 @@ const resetPassword = async (req, res) => {
       return res.json({ success: false, message: "User not found" });
     }
 
-    if (newPassword.length < 8) {
-      return res.json({
-        success: false,
-        message: "Password must be at least 8 characters long",
-      });
-    }
-
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
     await user.save();
 
     res.json({ success: true, message: "Password reset successfully" });
   } catch (error) {
-    console.error(error);
+    console.error("Reset password error:", error.message);
     res
       .status(500)
       .json({ success: false, message: "Failed to reset password" });
@@ -371,4 +405,5 @@ export {
   verifyOtp,
   resetPassword,
   getUserProfile,
+  userDeps,
 };
