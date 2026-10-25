@@ -386,6 +386,7 @@ const resetPassword = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
+    user.passwordChangedAt = new Date(); // ends every session issued before this moment
     await user.save();
 
     res.json({ success: true, message: "Password reset successfully" });

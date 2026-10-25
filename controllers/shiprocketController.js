@@ -1,13 +1,33 @@
 // server/controllers/shiprocketController.js
 import axios from "axios";
+import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import ShipRocketToken from "../models/shiprocketTokenModel.js"; // Import the token model
 import orderModel from "../models/orderModel.js"; // Assuming you have the Order model to access the order details
 import { sendInvoiceEmail } from "../utils/emailService.js";
 import ShiprocketOrder from "../models/shiprocketOrderModel.js";
 import { deriveShiprocketAmounts } from "../utils/orderPricing.js";
+import { createShiprocketRefresh } from "../utils/shiprocketAuth.js";
 
 dotenv.config();
+
+// Failed shipments are recorded on the order so they show up in the admin panel instead of vanishing
+const recordShipmentIssue = async (orderId, text) => {
+  try {
+    await orderModel.findByIdAndUpdate(orderId, { shipmentIssue: text });
+  } catch (error) {
+    console.error("Could not record the shipment issue:", error.message);
+  }
+};
+
+// Short-lived admin token for the backend's own call to the invoice route
+const internalAdminToken = () =>
+  process.env.JWT_SECRET
+    ? jwt.sign({ role: "admin", purpose: "invoice" }, process.env.JWT_SECRET, {
+        expiresIn: "2m",
+        algorithm: "HS256",
+      })
+    : "";
 
 // Accessing environment variables
 const SHIPROCKET_EMAIL = process.env.SHIPROCKET_EMAIL;
@@ -20,6 +40,18 @@ const SHIPROCKET_ORDER_BREADTH = process.env.SHIPROCKET_ORDER_BREADTH;
 const SHIPROCKET_ORDER_HEIGHT = process.env.SHIPROCKET_ORDER_HEIGHT;
 const SHIPROCKET_ORDER_WEIGHT = process.env.SHIPROCKET_ORDER_WEIGHT;
 const BACKEND_API_BASE_URL = process.env.BACKEND_API_BASE_URL;
+
+// A 401 from Shiprocket means the stored token went stale: log in again once and repeat the call
+axios.interceptors.response.use(
+  undefined,
+  createShiprocketRefresh({
+    axios,
+    baseUrl: SHIPROCKET_BASE_URL,
+    email: SHIPROCKET_EMAIL,
+    password: SHIPROCKET_PASSWORD,
+    tokenModel: ShipRocketToken,
+  })
+);
 
 const checkServiceability = async (req, res) => {
   try {
@@ -250,14 +282,13 @@ const generateInvoice = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error generating invoice",
-      error: error.response ? error.response.data : error.message,
     });
   }
 };
 
 const determinePaymentMethod = (order) => {
   if (order.paymentMethod === "COD") {
-    return "Postpaid"; // If COD, it's postpaid
+    return "COD"; // Shiprocket accepts only COD or Prepaid
   }
 
   if (order.paymentMethod === "Razorpay" && order.payment === true) {
@@ -377,16 +408,26 @@ const createShiprocketOrder = async (orderId) => {
       );
 
       // 🔥 Call Your Backend API to Generate Invoice
-      await axios.post(
-        `${BACKEND_API_BASE_URL}/api/shiprocket/generate-invoice`,
-        { orderId: order._id.toString() },
-        { headers: { "Content-Type": "application/json" } }
-      );
+      // The route needs an admin token, so the backend signs a short-lived one for this single call
+      try {
+        const invoiceResponse = await axios.post(
+          `${BACKEND_API_BASE_URL}/api/shiprocket/generate-invoice`,
+          { orderId: order._id.toString() },
+          { headers: { "Content-Type": "application/json", token: internalAdminToken() } }
+        );
+        if (!invoiceResponse.data || invoiceResponse.data.success !== true) {
+          throw new Error("Invoice request was not accepted");
+        }
+      } catch (invoiceError) {
+        console.error("Invoice request failed:", invoiceError.message);
+        await recordShipmentIssue(order._id, "The invoice email was not sent");
+      }
     } else {
       throw new Error("Error creating order in Shiprocket");
     }
   } catch (error) {
     console.error("🚨 Error creating order in Shiprocket:", error);
+    await recordShipmentIssue(orderId, "The Shiprocket order was not created");
   }
 };
 

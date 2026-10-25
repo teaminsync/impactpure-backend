@@ -95,7 +95,11 @@ const placeOrder = async (req, res) => {
     }
 
     // ✅ Convert items to store product references
+    // Name and price are saved with each line so the order stays readable if a product changes
+    const lineById = new Map(pricing.lines.map((line) => [line.product, line]));
     const formattedItems = items.map((item) => ({
+      name: lineById.get(item._id).name,
+      price: lineById.get(item._id).unitPricePaise / 100,
       product: item._id, // ✅ Store only the product ID
       quantity: item.quantity,
     }));
@@ -127,8 +131,8 @@ const placeOrder = async (req, res) => {
       order: newOrder,
     });
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Place order failed:", error.message);
+    res.status(500).json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 
@@ -267,7 +271,7 @@ const allOrders = async (req, res) => {
     res.json({ success: true, orders });
   } catch (error) {
     console.error("❌ Error fetching all orders:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 
@@ -285,7 +289,6 @@ const userOrders = async (req, res) => {
     const orders = await orderModel.find({ userId });
 
     // Check if the orders and items are being returned correctly
-    console.log("Orders fetched:", orders);
 
     if (!orders) {
       return res
@@ -302,7 +305,7 @@ const userOrders = async (req, res) => {
     res.json({ success: true, orders: populatedOrders });
   } catch (error) {
     console.log("Error fetching orders:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 
@@ -322,7 +325,7 @@ const updateStatus = async (req, res) => {
     res.json({ success: true, message: "Order Status Updated" });
   } catch (error) {
     console.error("❌ Error updating order status:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: "Something went wrong, please try again." });
   }
 };
 

@@ -12,6 +12,7 @@ const userSchema = new mongoose.Schema(
       match: /^\+91 [0-9]{10}$/, // Matches +91 followed by 10 digits
     },
     cartData: { type: Object, default: {} },
+    passwordChangedAt: { type: Date },
   },
   { minimize: false }
 );

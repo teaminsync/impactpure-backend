@@ -24,6 +24,7 @@ const orderSchema = new mongoose.Schema({
   razorpayPaymentId: { type: String, unique: true, sparse: true },
   paidAmountPaise: { type: Number },
   discountPaise: { type: Number },
+  shipmentIssue: { type: String },
 });
 
 const orderModel =

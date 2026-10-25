@@ -12,6 +12,7 @@ import {
   userLoginRules,
   verifyOtpRules,
 } from "../utils/limitRules.js";
+import { newsletterRules, orderStartRules } from "../utils/limitRulesExtra.js";
 
 const limiter = makeLimiter({
   store: createMongoStore(rateLimitModel),
@@ -23,6 +24,8 @@ export const userLoginLimit = limiter.limit({ rules: userLoginRules, failOpen: t
 export const accountWriteLimit = limiter.limit({ rules: accountWriteRules, failOpen: true });
 export const sendOtpLimit = limiter.limit({ rules: sendOtpRules, failOpen: false });
 export const verifyOtpLimit = limiter.limit({ rules: verifyOtpRules, failOpen: false });
+export const orderStartLimit = limiter.limit({ rules: orderStartRules, failOpen: true });
+export const newsletterLimit = limiter.limit({ rules: newsletterRules, failOpen: true });
 
 // Called by the controller right before an SMS is really sent
 export const smsDailyCheck = () => limiter.check(smsDailyRules(), { failOpen: false });

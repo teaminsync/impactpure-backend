@@ -12,11 +12,12 @@ import shiprocketRouter from "./routes/shiprocketRoute.js"; // Ensure this impor
 import { captureRawBody } from "./utils/rawBody.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { buildCorsOptions, parseOrigins } from "./config/cors.js";
+import { jsonErrorHandler } from "./middleware/errorHandler.js";
 
 // App Config
 const app = express();
 const port = process.env.PORT || 4000;
-connectDB();
+connectDB().catch((error) => console.error("MongoDB connection failed:", error.message));
 connectCloudinary();
 
 // Browsers may call the API only from the origins in CORS_ORIGINS (every origin until it is set)
@@ -41,5 +42,8 @@ app.use("/api/shiprocket", shiprocketRouter); // Register shiprocketRouter here
 app.get("/", (req, res) => {
   res.send("API Working");
 });
+
+// Last resort for bad JSON, oversized bodies and upload problems: no stack traces or internals
+app.use(jsonErrorHandler);
 
 app.listen(port, () => console.log("Server started on PORT: " + port));

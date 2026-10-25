@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import fs from "fs";
+import { escapeHtml } from "./htmlEscape.js";
 
 // Configure the transporter with your email service
 const transporter = nodemailer.createTransport({
@@ -16,7 +17,7 @@ export const sendWelcomeEmail = async (email, name) => {
       from: process.env.EMAIL_USER,
       to: email,
       subject: "Welcome to IMPACTPURE - Revolutionizing Water Purification!",
-      html: `<h1>Hello ${name},</h1>
+      html: `<h1>Hello ${escapeHtml(name)},</h1>
                    <p>Welcome to the IMPACTPURE family! We're thrilled to have you on board. By choosing IMPACTPURE, you're making a sustainable, health-conscious choice for yourself and the planet.</p>
                    <p>Our patented, eco-friendly water purifiers are designed to retain essential minerals, require no electricity, and ensure zero water wastage. We aim to provide you with pure, fresh water wherever you are.</p>
                    <br>
@@ -61,7 +62,7 @@ export const sendInvoiceEmail = async (email, invoiceUrl) => {
             <h1>Hello,</h1>
             <p>Thank you for shopping with IMPACTPURE! We are delighted to provide you with the finest water purification solution.</p>
             <p>Here is the invoice for your recent purchase. Click the link below to download it:</p>
-            <p><a href="${invoiceUrl}" target="_blank"><strong>Download Invoice</strong></a></p>
+            <p><a href="${escapeHtml(invoiceUrl)}" target="_blank"><strong>Download Invoice</strong></a></p>
             <br>
             <p>Best Regards,<br>IMPACTPURE Team</p>
             `,
